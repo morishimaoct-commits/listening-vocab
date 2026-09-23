@@ -127,6 +127,7 @@
   .cbtns .no{color:var(--bad)}
   .cbtns .yes{background:rgba(73,209,127,.16);border-color:var(--good);color:var(--good)}
   .cbtns .wide{grid-column:1/-1;font-size:14px;font-weight:500;color:var(--dim)}
+  .cbtns .nav{font-size:15px;font-weight:600;color:var(--accent)}
 
   /* 听写 */
   .pad{padding:14px}
@@ -8691,6 +8692,8 @@
       <div class="cbtns">
         <button class="no" id="btnNo">↻ 不认识</button>
         <button class="yes" id="btnYes">✓ 认识</button>
+        <button class="nav" id="btnPrev">← 上一个</button>
+        <button class="nav" id="btnNext">下一个 →</button>
         <button class="wide" id="btnPlay">🔊 再听一次</button>
         <button class="wide" id="btnShuffle">🔀 打乱顺序</button>
       </div>
@@ -8709,7 +8712,11 @@
         <span>进度 <b id="dictPos">0</b>/<b id="dictTotal">0</b></span>
         <span>对 <b id="dictOk">0</b></span>
         <span>错 <b id="dictBad">0</b></span>
-        <button class="chip" id="dictSkip" style="margin-left:auto">跳过</button>
+        <button class="chip" id="dictSkip" style="margin-left:auto">显示答案</button>
+      </div>
+      <div class="cbtns" style="margin-top:12px">
+        <button class="nav" id="dictPrev">← 上一个</button>
+        <button class="nav" id="dictNext">下一个 →</button>
       </div>
     </div>
   </section>
@@ -8724,6 +8731,10 @@
       <div class="qp" id="quizP"></div>
       <div class="opts" id="quizOpts"></div>
       <div class="fb center" id="quizFb"></div>
+      <div class="cbtns" style="margin-top:12px">
+        <button class="nav" id="quizPrev">← 上一个</button>
+        <button class="nav" id="quizNext">下一个 →</button>
+      </div>
     </div>
   </section>
 </main>
@@ -8767,7 +8778,7 @@ const ok = p => p && p.trim() && p.trim() !== '—';
 const isDone = k => !!store.done[k];
 function setDone(k, v) { if (v) store.done[k] = 1; else delete store.done[k]; save(); renderProg(); }
 
-const S = { mode: 'list', chIdx: -1, q: '', restrict: false, pool: [], idx: 0, flip: false, yes: 0, no: 0, dIdx: 0, dOk: 0, dBad: 0, dPool: [], qScore: 0, qN: 0, qStreak: 0, lock: false };
+const S = { mode: 'list', chIdx: -1, q: '', restrict: false, pool: [], idx: 0, flip: false, yes: 0, no: 0, dIdx: 0, dOk: 0, dBad: 0, dPool: [], qScore: 0, qN: 0, qStreak: 0, lock: false, qHist: [], qPos: -1 };
 
 /* ---------- 发音 ---------- */
 let voices = [];
@@ -8905,10 +8916,19 @@ function buildDict() {
   $('dictTotal').textContent = S.dPool.length;
   drawDict();
 }
-function drawDict() {
+function drawDict(keepFb) {
   $('dictPos').textContent = Math.min(S.dIdx + 1, S.dPool.length);
   $('dictOk').textContent = S.dOk; $('dictBad').textContent = S.dBad;
   $('dictInput').value = '';
+  if (!keepFb) $('dictFb').textContent = '';
+}
+function dictGo(step) {
+  const n = S.dIdx + step;
+  if (n < 0 || n >= S.dPool.length) return;
+  S.dIdx = n;
+  drawDict(false);
+  const e = S.dPool[S.dIdx];
+  if (e) speak(e.term);
 }
 function checkDict() {
   const e = S.dPool[S.dIdx]; if (!e) return;
@@ -8917,7 +8937,7 @@ function checkDict() {
   if (raw && (raw === want || raw.replace(/[.,]/g, '') === want.replace(/[.,]/g, ''))) {
     S.dOk++; setDone(e.key, true); $('dictOk').textContent = S.dOk;
     $('dictFb').innerHTML = `<span class="ok">✓ 正确</span> <code>${esc(e.term)}</code> /${esc(e.ipa)}/ — ${esc(e.zh)}`;
-    S.dIdx++; drawDict();
+    S.dIdx++; drawDict(true);
     const nx = S.dPool[S.dIdx];
     setTimeout(() => { if (nx) speak(nx.term); }, 500);
   } else {
@@ -8929,32 +8949,59 @@ function checkDict() {
 }
 
 /* ---------- 测试 ---------- */
-function drawQuiz() {
+/* 出题 + 历史，支持上一个 / 下一个 */
+function makeQuiz() {
   const pool = filtered();
-  if (pool.length < 4) { $('quizQ').textContent = '词条太少，无法出题'; $('quizOpts').innerHTML = ''; return; }
+  if (pool.length < 4) {
+    $('quizQ').textContent = '词条太少，无法出题';
+    $('quizP').textContent = ''; $('quizOpts').innerHTML = ''; $('quizFb').textContent = '';
+    return;
+  }
   const e = pool[Math.floor(Math.random() * pool.length)];
   const en2zh = Math.random() < 0.5;
   const opts = shuffle([e, ...shuffle(pool.filter(x => x.key !== e.key)).slice(0, 3)]);
-  S.lock = false;
-  $('quizQ').textContent = en2zh ? e.term : e.zh;
-  $('quizP').textContent = en2zh && ok(e.ipa) ? '/' + e.ipa + '/' : '';
-  $('quizFb').textContent = '';
-  $('quizOpts').innerHTML = opts.map((o, i) => `<button class="opt" data-i="${i}">${esc(en2zh ? o.zh : o.term)}</button>`).join('');
+  S.qHist = S.qHist.slice(0, S.qPos + 1);
+  S.qHist.push({ e, en2zh, opts, answered: false, chosen: -1, right: false });
+  S.qPos = S.qHist.length - 1;
+  renderQuiz();
+}
+function renderQuiz() {
+  const q = S.qHist[S.qPos];
+  if (!q) { $('quizQ').textContent = '—'; $('quizP').textContent = ''; $('quizOpts').innerHTML = ''; $('quizFb').textContent = ''; return; }
+  S.lock = q.answered;
+  $('quizQ').textContent = q.en2zh ? q.e.term : q.e.zh;
+  $('quizP').textContent = q.en2zh && ok(q.e.ipa) ? '/' + q.e.ipa + '/' : '';
+  $('quizFb').innerHTML = q.answered
+    ? (q.right ? `<span class="ok">✓ 正确</span> ${esc(q.e.term)} — ${esc(q.e.zh)}`
+               : `<span class="no">✗ 正确答案</span> ${esc(q.e.term)} <code>/${esc(q.e.ipa)}/</code> ${esc(q.e.zh)}`)
+    : '';
+  $('quizOpts').innerHTML = q.opts.map((o, i) => {
+    let cls = 'opt';
+    if (q.answered) {
+      if (o.key === q.e.key) cls += ' right';
+      else if (i === q.chosen) cls += ' wrong';
+    }
+    return `<button class="${cls}">${esc(q.en2zh ? o.zh : o.term)}</button>`;
+  }).join('');
   $('quizOpts').querySelectorAll('.opt').forEach((b, i) => {
     b.onclick = () => {
-      if (S.lock) return; S.lock = true;
-      const right = opts[i].key === e.key;
-      b.classList.add(right ? 'right' : 'wrong');
-      if (!right) $('quizOpts').querySelectorAll('.opt').forEach((x, j) => { if (opts[j].key === e.key) x.classList.add('right'); });
+      const cur = S.qHist[S.qPos];
+      if (cur.answered) return;
+      const right = cur.opts[i].key === cur.e.key;
+      cur.answered = true; cur.chosen = i; cur.right = right;
       S.qN++;
-      if (right) { S.qScore++; S.qStreak++; setDone(e.key, true); } else { S.qStreak = 0; setDone(e.key, false); }
+      if (right) { S.qScore++; S.qStreak++; setDone(cur.e.key, true); } else { S.qStreak = 0; setDone(cur.e.key, false); }
       $('quizScore').textContent = S.qScore; $('quizN').textContent = S.qN; $('quizStreak').textContent = S.qStreak;
-      $('quizFb').innerHTML = right ? `<span class="ok">✓ 正确</span> ${esc(e.term)} — ${esc(e.zh)}`
-        : `<span class="no">✗ 正确答案</span> ${esc(e.term)} <code>/${esc(e.ipa)}/</code> ${esc(e.zh)}`;
-      if (en2zh || Math.random() < 0.6) speak(e.term);
-      setTimeout(drawQuiz, right ? 900 : 1900);
+      renderQuiz();
+      if (cur.en2zh || Math.random() < 0.6) speak(cur.e.term);
+      setTimeout(() => { if (S.qPos === S.qHist.length - 1) makeQuiz(); }, right ? 900 : 1900);
     };
   });
+}
+function quizGo(step) {
+  if (step < 0) { if (S.qPos > 0) { S.qPos--; renderQuiz(); } return; }
+  if (S.qPos < S.qHist.length - 1) { S.qPos++; renderQuiz(); }
+  else makeQuiz();
 }
 
 /* ---------- 章节下拉 ---------- */
@@ -8964,7 +9011,7 @@ function fillChSel() {
 }
 
 /* ---------- 交互绑定 ---------- */
-function refresh() { renderList(); buildPool(); buildDict(); drawQuiz(); }
+function refresh() { renderList(); buildPool(); buildDict(); S.qHist = []; S.qPos = -1; makeQuiz(); }
 
 document.querySelectorAll('nav.tabs button').forEach(b => b.onclick = () => {
   S.mode = b.dataset.mode;
@@ -8974,7 +9021,7 @@ document.querySelectorAll('nav.tabs button').forEach(b => b.onclick = () => {
   if (S.mode === 'list') renderList();
   if (S.mode === 'card') buildPool();
   if (S.mode === 'dictation') { buildDict(); const e = S.dPool[0]; if (e) speak(e.term); }
-  if (S.mode === 'quiz') drawQuiz();
+  if (S.mode === 'quiz') { if (!S.qHist.length) { S.qPos = -1; makeQuiz(); } else renderQuiz(); }
 });
 
 $('listOut').addEventListener('click', ev => {
@@ -8993,6 +9040,8 @@ $('listOut').addEventListener('click', ev => {
 $('flash').onclick = () => { S.flip = !S.flip; drawCard(); };
 $('btnYes').onclick = () => { const e = S.pool[S.idx]; if (e) { setDone(e.key, true); S.yes++; } nextCard(1); };
 $('btnNo').onclick = () => { const e = S.pool[S.idx]; if (e) { setDone(e.key, false); S.no++; } nextCard(1); };
+$('btnPrev').onclick = () => nextCard(-1);
+$('btnNext').onclick = () => nextCard(1);
 $('btnPlay').onclick = () => { const e = S.pool[S.idx]; if (e) speak(e.term); };
 $('btnShuffle').onclick = () => { shuffle(S.pool); S.idx = 0; S.flip = false; drawCard(); };
 
@@ -9006,11 +9055,15 @@ $('flash').addEventListener('touchend', e => {
 
 $('dictPlay').onclick = () => { const e = S.dPool[S.dIdx]; if (e) speak(e.term); };
 $('dictCheck').onclick = checkDict;
+$('dictPrev').onclick = () => dictGo(-1);
+$('dictNext').onclick = () => dictGo(1);
 $('dictSkip').onclick = () => {
   const e = S.dPool[S.dIdx]; if (!e) return;
   $('dictFb').innerHTML = `<span class="no">跳过</span> ${esc(e.term)} <code>/${esc(e.ipa)}/</code> — ${esc(e.zh)}`;
-  S.dIdx++; drawDict();
+  S.dIdx++; drawDict(true);
 };
+$('quizPrev').onclick = () => quizGo(-1);
+$('quizNext').onclick = () => quizGo(1);
 $('dictInput').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); checkDict(); } });
 
 let qT = null;
@@ -9061,7 +9114,7 @@ window.addEventListener('orientationchange', () => setTimeout(layout, 250));
   if (store.set.theme) { document.body.classList.add('light'); $('themeBtn').textContent = '深色'; $('themeBtn').classList.add('on'); }
   const total = ALL.length, uniq = UNIQUE;
   document.title = `听力场景词汇（${total} 条 · ${uniq} 词）`;
-  renderProg(); renderList(); buildPool(); buildDict(); drawQuiz();
+  renderProg(); renderList(); buildPool(); buildDict(); S.qPos = -1; makeQuiz();
   layout(); setTimeout(layout, 400);
 })();
 </script>
